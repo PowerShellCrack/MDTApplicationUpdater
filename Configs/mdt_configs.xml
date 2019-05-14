@@ -7,6 +7,13 @@
 		<remoteMDTProvider>False</remoteMDTProvider>
 		<!-- Using MDT admin credentials and on the same machine the script is running, run get-credential | Export-Clixml c:\MDTcreds.xml. Copy that file to script folder -->
 		<remoteAuthFile>Configs\MDTCreds.xml</remoteAuthFile>
+        
+        <UpdateApplications>True</UpdateApplications>
+        <UpdateDefinitions>True</UpdateDefinitions>
+        <ImportPatchedWIM>True</ImportPatchedWIM>
+        <OSOriginalFolder>Vanilla</OSOriginalFolder>
+        <OSPatchedFolder>Patched</OSPatchedFolder>
+        <UpdateTS>True</UpdateTS>
     </server>
 
     <server>
@@ -16,6 +23,13 @@
 		<remoteMDTProvider>False</remoteMDTProvider>
 		<!-- Using MDT admin credentials and on the same machine the script is running, run get-credential | Export-Clixml c:\MDTcreds.xml. Copy that file to script folder -->
 		<remoteAuthFile>Configs\MDTCreds.xml</remoteAuthFile>
+
+        <UpdateApplications>True</UpdateApplications>
+        <UpdateDefinitions>False</UpdateDefinitions>
+        <ImportPatchedWIM>False</ImportPatchedWIM>
+        <OSOriginalFolder>Vanilla</OSOriginalFolder>
+        <OSPatchedFolder>Patched</OSPatchedFolder>
+        <UpdateTS>True</UpdateTS>
     </server>
 
     <softwareListCliXml>

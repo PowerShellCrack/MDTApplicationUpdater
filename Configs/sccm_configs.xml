@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<SCCMConfigs>
+    <server>
+        <host>sccm.domain</host>
+        <repository>source$</repository>
+        <remoteProvider>True</remoteProvider>
+	    <!-- Using sccm admin credentials and on the same machine the script is running, run get-credential | Export-Clixml c:\SCCMCreds.xml. Copy that file to script folder -->
+	    <remoteAuthFile>Configs\SCCMCreds.xml</remoteAuthFile>
+
+        <UpdateApplications>True</UpdateApplications>
+        <UpdateDefinitions>True</UpdateDefinitions>
+        <ImportPatchedWIM>True</ImportPatchedWIM>
+        <UpdateTS>True</UpdateTS>
+    </server>
+
+    <softwareListCliXml>
+		<!-- Run Get-3rdPartySoftware.ps1 to generated software xml. change the rootpath to the software and the listpath to the xml-->
+		<software rootPath="\\FileServer\share\software\3rd Party Software & Updates" listPath="\\FileServer\share\software\3rd Party Software & Updates\Software\softwarelist.xml" />	
+    </softwareListCliXml>
+  
+    <!-- Defines how software will be built> -->
+    <softwareProperties>
+	<!-- Define which sofware will be build either as Application or Package; if not specified:
+		- software with "msi" extensions will be application
+		- software with "exe" extensions will be packages
+	    
+	     NOTE: Identical matching is not required (uses like operator. eg. excluding Google will exlcude all google software)
+        -->
+	<SoftwareOnlyasApps></SoftwareOnlyasApps>
+        <SoftwareOnlyasPkg></SoftwareOnlyasPkg>
+	<ExcludeSoftware>Git</ExcludeSoftware>
+	
+	<!-- Only updates applications if an existing appliction found -->
+	<UpdateExistingLikeSoftware>True</UpdateExistingLikeSoftware>
+
+	<!-- Only deploys applications if an existing application found and deployment exists
+	     If test group specified, used that instead
+	-->
+	<DeployApplications>True</DeployApplications>
+	<TestDeploymentCollection>TestWorkstations</TestDeploymentCollection>
+
+	<!-- If Tasksequence has a matching package or applications replace it -->
+	<UpdateTaskSequences>True</UpdateTaskSequences>
+    </softwareProperties>
+
+</SCCMConfigs>

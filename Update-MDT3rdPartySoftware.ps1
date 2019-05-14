@@ -17,8 +17,7 @@
 #==================================================
 # FUNCTIONS
 #==================================================
-
-function Test-IsISE {
+Function Test-IsISE {
 # try...catch accounts for:
 # Set-StrictMode -Version latest
     try {    
@@ -27,19 +26,24 @@ function Test-IsISE {
     catch {
         return $false;
     }
-}        
-        
+}
+
 Function Import-SMSTSENV{
     ## Get the name of this function
     [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
-
+    
     try{
         # Create an object to access the task sequence environment
         $Script:tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment 
-        #$tsenv.GetVariables() | % { Write-Output "$ScriptName - $_ = $($tsenv.Value($_))" }
+        #test if variables exist
+        $tsenv.GetVariables()  #| % { Write-Output "$ScriptName - $_ = $($tsenv.Value($_))" }
     }
     catch{
-        Write-Output "${CmdletName} - TS environment not detected. Running in stand-alone mode."
+        If(${CmdletName}){$prefix = "${CmdletName} ::" }Else{$prefix = "" }
+        Write-Warning ("{0}Task Sequence environment not detected. Running in stand-alone mode." -f $prefix)
+        
+        #set variable to null
+        $Script:tsenv = $null
     }
     Finally{
         #set global Logpath
@@ -158,7 +162,7 @@ Function Write-LogEntry{
 ## Instead fo using $PSScriptRoot variable, use the custom InvocationInfo for ISE runs
 If (Test-Path -LiteralPath 'variable:HostInvocation') { $InvocationInfo = $HostInvocation } Else { $InvocationInfo = $MyInvocation }
 #Since running script within Powershell ISE doesn't have a $scriptpath...hardcode it
-If(Test-IsISE){$scriptPath = "C:\Development\Github\MDTAutomation\Update-MDT3rdPartySoftware.ps1"}Else{$scriptPath = $InvocationInfo.MyCommand.Path}
+If(Test-IsISE){$scriptPath = "C:\Development\GitHub\MDTApplicationUpdater\Update-MDT3rdPartySoftware.ps1"}Else{$scriptPath = $InvocationInfo.MyCommand.Path}
 [string]$scriptDirectory = Split-Path $scriptPath -Parent
 [string]$scriptName = Split-Path $scriptPath -Leaf
 [string]$scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension($scriptName)
@@ -169,28 +173,58 @@ If(Test-IsISE){$scriptPath = "C:\Development\Github\MDTAutomation\Update-MDT3rdP
 #Try to Import SMSTSEnv from MDT server
 Import-SMSTSENV
 
-[string]$MDTXMLFile = (Get-Content "$ConfigPath\mdt_configs.xml" -ReadCount 0) -replace '&','&amp;'
-[xml]$MDTConfigs = $MDTXMLFile
+#check paths; if not found, unable to continue
+If(Test-Path "$ConfigPath\mdt_configs.xml"){
+    [string]$MDTXMLFile = (Get-Content "$ConfigPath\mdt_configs.xml" -ReadCount 0) -replace '&','&amp;'
+    [xml]$MDTConfigs = $MDTXMLFile
 
-#get the list of aoftware
-[string]$3rdSoftwareRootPath = $MDTConfigs.mdtConfigs.softwareListCliXml.software.rootPath
-[string]$3rdSoftwareListPath = $MDTConfigs.mdtConfigs.softwareListCliXml.software.listPath
+    #get the list of aoftware
+    [string]$3rdSoftwareRootPath = $MDTConfigs.mdtConfigs.softwareListCliXml.software.rootPath
+    [string]$3rdSoftwareListPath = $MDTConfigs.mdtConfigs.softwareListCliXml.software.listPath
 
+    If(-not(Test-Path $3rdSoftwareRootPath) -or -not(Test-Path $3rdSoftwareListPath)){
+        write-host ("Unable to find software repository path or xml file: {0}" -f $3rdSoftwareRootPath) -ForegroundColor Red
+        Exit
+    }
+}
+Else{
+    write-host ("Unable to find configuration settings: {0}" -f "$ConfigPath\mdt_configs.xml") -ForegroundColor Red
+    Exit
+}
+
+##* ==============================
+##* MAIN - DO ACTION
+##* ==============================
 #get the list of MDT servers to update
 $MDTConfigs.mdtConfigs.server | Foreach {
-    write-host ("Updating Software on DeploymentShare: " + $_.Host + "\" + $_.share + "...")
+    
     [string]$MDTHost = $_.Host
     [string]$MDTShare = $_.share
     [string]$MDTPhysicalPath = $_.PhysicalPath
 
-    [boolean]$RemoteMDTProvider = [boolean]::Parse($_.remoteMDTProvider)
+    #build mdt path to pull powershell
+    $MDTSharePath = "\\" + $MDTHost + "\" + $MDTShare
 
+    [boolean]$UpdateApplications = [boolean]::Parse($_.updateApplications)
+    If(!$UpdateApplications){
+        write-host ("Configurations is configure NOT update Software on MDT Server: {0}" -f $MDTHost) -ForegroundColor Red
+        Break
+    }
 
+    If(-not(Test-Path $MDTSharePath) ){
+        write-host ("Unable to connect to MDT's DeploymentShare: {0}" -f $MDTSharePath) -ForegroundColor Red
+        Break
+    }
+    Else{
+        write-host ("Updating Software on MDT's DeploymentShare: {0}" -f $MDTSharePath)
+    }
+
+    
     ##* ==============================
     ##* IMPORT MODULE/EXTENSIONS
     ##* ==============================
-    #build mdt path to pull powershell
-    $MDTSharePath = "\\" + $MDTHost + "\" + $MDTShare
+    [boolean]$RemoteMDTProvider = [boolean]::Parse($_.remoteMDTProvider)
+
     [string]$RemoteModulesPath = Join-Path -Path "$MDTSharePath\Tools" -ChildPath 'Modules'
 
     #import TaskSequence Module
@@ -198,7 +232,7 @@ $MDTConfigs.mdtConfigs.server | Foreach {
 
     #Try to use remote mdt provider is enabled
     If($RemoteMDTProvider){
-        [System.Management.Automation.PSCredential]$MDTCreds = Import-Clixml ($scriptRoot + "\" + $MDTConfigs.mdtConfigs.server.remoteAuthFile)
+        [System.Management.Automation.PSCredential]$MDTCreds = Import-Clixml ($scriptDirectory + "\" + $MDTConfigs.mdtConfigs.server.remoteAuthFile)
 
         Try{
             $Session = New-PSSession -ComputerName $MDTHost -Credential $MDTCreds
