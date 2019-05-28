@@ -28,42 +28,32 @@ Function Test-IsISE {
     }
 }
 
-Function Import-SMSTSENV{
-    ## Get the name of this function
-    [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
-    
-    try{
-        # Create an object to access the task sequence environment
-        $Script:tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment 
-        #test if variables exist
-        $tsenv.GetVariables()  #| % { Write-Output "$ScriptName - $_ = $($tsenv.Value($_))" }
-    }
-    catch{
-        If(${CmdletName}){$prefix = "${CmdletName} ::" }Else{$prefix = "" }
-        Write-Warning ("{0}Task Sequence environment not detected. Running in stand-alone mode." -f $prefix)
-        
-        #set variable to null
-        $Script:tsenv = $null
-    }
-    Finally{
-        #set global Logpath
-        if ($tsenv){
-            #grab the progress UI
-            $Script:TSProgressUi = New-Object -ComObject Microsoft.SMS.TSProgressUI
+Function Get-ScriptPath {
+    If (Test-Path -LiteralPath 'variable:HostInvocation') { $InvocationInfo = $HostInvocation } Else { $InvocationInfo = $MyInvocation }
 
-            # Query the environment to get an existing variable
-            # Set a variable for the task sequence log path
-            #$Global:Logpath = $tsenv.Value("LogPath")
-            $Global:Logpath = $tsenv.Value("_SMSTSLogPath")
-
-            # Or, convert all of the variables currently in the environment to PowerShell variables
-            $tsenv.GetVariables() | % { Set-Variable -Name "$_" -Value "$($tsenv.Value($_))" }
+    # Makes debugging from ISE easier.
+    if ($PSScriptRoot -eq "")
+    {
+        if (Test-IsISE)
+        {
+            $psISE.CurrentFile.FullPath
+            #$root = Split-Path -Parent $psISE.CurrentFile.FullPath
         }
-        Else{
-            $Global:Logpath = $env:TEMP
+        else
+        {
+            $context = $psEditor.GetEditorContext()
+            $context.CurrentFile.Path
+            #$root = Split-Path -Parent $context.CurrentFile.Path
         }
+    }
+    else
+    {
+        #$PSScriptRoot
+        $PSCommandPath
+        #$MyInvocation.MyCommand.Path
     }
 }
+
 
 Function Format-ElapsedTime($ts) {
     $elapsedTime = ""
@@ -198,24 +188,17 @@ function Get-MsiProperty
 }
 
 
-##* ==============================
+##*===========================================================================
 ##* VARIABLES
-##* ==============================
-
-## Variables: Script Name and Script Paths
-## Instead fo using $PSScriptRoot variable, use the custom InvocationInfo for ISE runs
-If (Test-Path -LiteralPath 'variable:HostInvocation') { $InvocationInfo = $HostInvocation } Else { $InvocationInfo = $MyInvocation }
-#Since running script within Powershell ISE doesn't have a $scriptpath...hardcode it
-If(Test-IsISE){$scriptPath = "C:\Development\GitHub\MDTApplicationUpdater\Update-SCCM3rdPartySoftware.ps1"}Else{$scriptPath = $InvocationInfo.MyCommand.Path}
+##*===========================================================================
+# Use function to get paths because Powershell ISE and other editors have differnt results
+$scriptPath = Get-ScriptPath
 [string]$scriptDirectory = Split-Path $scriptPath -Parent
 [string]$scriptName = Split-Path $scriptPath -Leaf
 [string]$scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension($scriptName)
 
 #Get required folder and File paths
 [string]$ConfigPath = Join-Path -Path $scriptDirectory -ChildPath 'Configs'
-
-#Try to Import SMSTSEnv from MDT server
-Import-SMSTSENV
 
 [string]$SCCMXMLFile = (Get-Content "$ConfigPath\sccm_configs.s3i.xml" -ReadCount 0) -replace '&','&amp;'
 [xml]$SCCMConfigs = $SCCMXMLFile
