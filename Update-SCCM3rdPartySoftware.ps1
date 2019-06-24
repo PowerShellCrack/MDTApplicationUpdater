@@ -199,16 +199,33 @@ $scriptPath = Get-ScriptPath
 
 #Get required folder and File paths
 [string]$ConfigPath = Join-Path -Path $scriptDirectory -ChildPath 'Configs'
+[string]$RelativeLogPath = Join-Path -Path $scriptDirectory -ChildPath 'Logs'
 
-[string]$SCCMXMLFile = (Get-Content "$ConfigPath\sccm_configs.s3i.xml" -ReadCount 0) -replace '&','&amp;'
+#Set this to somehting different for testing
+$ConfigFile = "sccm_configs.s3i.xml"
+
+
+#build log name
+[string]$FileName = $scriptBaseName +'.log'
+#build global log fullpath
+$Global:LogFilePath = Join-Path $RelativeLogPath -ChildPath $FileName
+#clean old log
+if(Test-Path $Global:LogFilePath){remove-item -Path $Global:LogFilePath -ErrorAction SilentlyContinue | Out-Null}
+
+Write-Host "Logging to file: $LogFilePath" -ForegroundColor Cyan
+# BUILD PATHS FROM XML
+#=======================================================
+[string]$SCCMXMLFile = (Get-Content "$ConfigPath\$ConfigFile" -ReadCount 0) -replace '&','&amp;'
 [xml]$SCCMConfigs = $SCCMXMLFile
-
 #get the list of aoftware
 [string]$SCCMServer = $SCCMConfigs.SCCMConfigs.server.host
 
 [string]$SCCMRepo = $SCCMConfigs.SCCMConfigs.server.repository
 [string]$SCCMLocalRepo = $SCCMConfigs.SCCMConfigs.server.localrepository
 [string]$SCCMSiteCode = $SCCMConfigs.SCCMConfigs.server.sitecode
+
+
+
 
 #build sccm source path
 $SCCMSharePath = "\\" + $SCCMServer + "\" + $SCCMRepo

@@ -4,7 +4,6 @@
         <host>mdt.domain</host>
         <share>deploymentshare$</share>
         <PhysicalPath>D:\DeploymentShare</PhysicalPath>
-		<remoteMDTProvider>False</remoteMDTProvider>
 		<!-- Using MDT admin credentials and on the same machine the script is running, run get-credential | Export-Clixml c:\MDTcreds.xml. Copy that file to script folder -->
 		<remoteAuthFile>Configs\MDTCreds.xml</remoteAuthFile>
         
@@ -20,7 +19,6 @@
         <host>vdi.domain</host>
         <share>deploymentshare$</share>
         <PhysicalPath>D:\DeploymentShareVDI</PhysicalPath>
-		<remoteMDTProvider>False</remoteMDTProvider>
 		<!-- Using MDT admin credentials and on the same machine the script is running, run get-credential | Export-Clixml c:\MDTcreds.xml. Copy that file to script folder -->
 		<remoteAuthFile>Configs\MDTCreds.xml</remoteAuthFile>
 

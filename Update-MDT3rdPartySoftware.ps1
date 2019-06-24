@@ -17,11 +17,12 @@
 #==================================================
 # FUNCTIONS
 #==================================================
+
 Function Test-IsISE {
-# try...catch accounts for:
-# Set-StrictMode -Version latest
+    # try...catch accounts for:
+    # Set-StrictMode -Version latest
     try {    
-        return $psISE -ne $null;
+        return ($null -ne $psISE);
     }
     catch {
         return $false;
@@ -29,8 +30,6 @@ Function Test-IsISE {
 }
 
 Function Get-ScriptPath {
-    If (Test-Path -LiteralPath 'variable:HostInvocation') { $InvocationInfo = $HostInvocation } Else { $InvocationInfo = $MyInvocation }
-
     # Makes debugging from ISE easier.
     if ($PSScriptRoot -eq "")
     {
@@ -55,91 +54,229 @@ Function Get-ScriptPath {
 }
 
 
+Function Get-SMSTSENV {
+    param(
+        [switch]$ReturnLogPath,
+        [switch]$NoWarning
+    )
+    
+    Begin{
+        ## Get the name of this function
+        [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
+    }
+    Process{
+        try{
+            # Create an object to access the task sequence environment
+            $Script:tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment 
+        }
+        catch{
+            If(${CmdletName}){$prefix = "${CmdletName} ::" }Else{$prefix = "" }
+            If(!$NoWarning){Write-Warning ("{0}Task Sequence environment not detected. Running in stand-alone mode" -f $prefix)}
+            
+            #set variable to null
+            $Script:tsenv = $null
+        }
+        Finally{
+            #set global Logpath
+            if ($Script:tsenv){
+                #grab the progress UI
+                $Script:TSProgressUi = New-Object -ComObject Microsoft.SMS.TSProgressUI
+
+                # Convert all of the variables currently in the environment to PowerShell variables
+                $tsenv.GetVariables() | ForEach-Object { Set-Variable -Name "$_" -Value "$($tsenv.Value($_))" }
+                
+                # Query the environment to get an existing variable
+                # Set a variable for the task sequence log path
+                
+                #Something like: C:\MININT\SMSOSD\OSDLOGS
+                #[string]$LogPath = $tsenv.Value("LogPath")
+                #Somthing like C:\WINDOWS\CCM\Logs\SMSTSLog
+                [string]$LogPath = $tsenv.Value("_SMSTSLogPath")
+                
+            }
+            Else{
+                [string]$LogPath = $env:Temp
+            }
+        }
+    }
+    End{
+        #If output log path if specified , otherwise output ts environment
+        If($ReturnLogPath){
+            return $LogPath
+        }
+        Else{
+            return $Script:tsenv
+        }
+    }
+}
+
+
 Function Format-ElapsedTime($ts) {
     $elapsedTime = ""
-    if ( $ts.Minutes -gt 0 ){$elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );}
-    else{$elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );}
-    if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0){$elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);}
+    if ( $ts.Minutes -gt 0 ){$elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );}
+    else{$elapsedTime = [string]::Format( "{0:00}.{1:00} sec", $ts.Seconds, $ts.Milliseconds / 10 );}
+    if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0){$elapsedTime = [string]::Format("{0:00} ms", $ts.Milliseconds);}
     if ($ts.Milliseconds -eq 0){$elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);}
     return $elapsedTime
 }
 
-Function Format-DatePrefix{
+Function Format-DatePrefix {
     [string]$LogTime = (Get-Date -Format 'HH:mm:ss.fff').ToString()
 	[string]$LogDate = (Get-Date -Format 'MM-dd-yyyy').ToString()
-    $CombinedDateTime = "$LogDate $LogTime"
     return ($LogDate + " " + $LogTime)
 }
 
-Function Write-LogEntry{
-    [CmdletBinding()]
+Function Write-LogEntry {
     param(
         [Parameter(Mandatory=$true,Position=0,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
         [ValidateNotNullOrEmpty()]
         [string]$Message,
-
         [Parameter(Mandatory=$false,Position=2)]
 		[string]$Source = '',
-
         [parameter(Mandatory=$false)]
         [ValidateSet(0,1,2,3,4)]
         [int16]$Severity,
 
-        [parameter(Mandatory=$false, HelpMessage="Name of the log file that the entry will written to.")]
+        [parameter(Mandatory=$false, HelpMessage="Name of the log file that the entry will written to")]
         [ValidateNotNullOrEmpty()]
         [string]$OutputLogFile = $Global:LogFilePath,
 
         [parameter(Mandatory=$false)]
-        [switch]$Outhost = $Global:OutToHost
+        [switch]$Outhost
     )
-    ## Get the name of this function
-    [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
+    Begin{
+        [string]$LogTime = (Get-Date -Format 'HH:mm:ss.fff').ToString()
+        [string]$LogDate = (Get-Date -Format 'MM-dd-yyyy').ToString()
+        [int32]$script:LogTimeZoneBias = [timezone]::CurrentTimeZone.GetUtcOffset([datetime]::Now).TotalMinutes
+        [string]$LogTimePlusBias = $LogTime + $script:LogTimeZoneBias
+        
+    }
+    Process{
+        # Get the file name of the source script
+        Try {
+            If ($script:MyInvocation.Value.ScriptName) {
+                [string]$ScriptSource = Split-Path -Path $script:MyInvocation.Value.ScriptName -Leaf -ErrorAction 'Stop'
+            }
+            Else {
+                [string]$ScriptSource = Split-Path -Path $script:MyInvocation.MyCommand.Definition -Leaf -ErrorAction 'Stop'
+            }
+        }
+        Catch {
+            $ScriptSource = ''
+        }
+        
+        
+        If(!$Severity){$Severity = 1}
+        $LogFormat = "<![LOG[$Message]LOG]!>" + "<time=`"$LogTimePlusBias`" " + "date=`"$LogDate`" " + "component=`"$ScriptSource`" " + "context=`"$([Security.Principal.WindowsIdentity]::GetCurrent().Name)`" " + "type=`"$Severity`" " + "thread=`"$PID`" " + "file=`"$ScriptSource`">"
+        
+        # Add value to log file
+        try {
+            Out-File -InputObject $LogFormat -Append -NoClobber -Encoding Default -FilePath $OutputLogFile -ErrorAction Stop
+        }
+        catch {
+            Write-Host ("[{0}] [{1}] :: Unable to append log entry to [{1}], error: {2}" -f $LogTimePlusBias,$ScriptSource,$OutputLogFile,$_.Exception.Message) -ForegroundColor Red
+        }
+    }
+    End{
+        If($Outhost -or $Global:OutTohost){
+            If($Source){
+                $OutputMsg = ("[{0}] [{1}] :: {2}" -f $LogTimePlusBias,$Source,$Message)
+            }
+            Else{
+                $OutputMsg = ("[{0}] [{1}] :: {2}" -f $LogTimePlusBias,$ScriptSource,$Message)
+            }
 
-    [string]$LogTime = (Get-Date -Format 'HH:mm:ss.fff').ToString()
-	[string]$LogDate = (Get-Date -Format 'MM-dd-yyyy').ToString()
-	[int32]$script:LogTimeZoneBias = [timezone]::CurrentTimeZone.GetUtcOffset([datetime]::Now).TotalMinutes
-	[string]$LogTimePlusBias = $LogTime + $script:LogTimeZoneBias
-    #  Get the file name of the source script
+            Switch($Severity){
+                0       {Write-Host $OutputMsg -ForegroundColor Green}
+                1       {Write-Host $OutputMsg -ForegroundColor Gray}
+                2       {Write-Warning $OutputMsg}
+                3       {Write-Host $OutputMsg -ForegroundColor Red}
+                4       {If($Global:Verbose){Write-Verbose $OutputMsg}}
+                default {Write-Host $OutputMsg}
+            }
+        }
+    }
+}
 
-    Try {
-	    If ($script:MyInvocation.Value.ScriptName) {
-		    [string]$ScriptSource = Split-Path -Path $script:MyInvocation.Value.ScriptName -Leaf -ErrorAction 'Stop'
-	    }
-	    Else {
-		    [string]$ScriptSource = Split-Path -Path $script:MyInvocation.MyCommand.Definition -Leaf -ErrorAction 'Stop'
-	    }
-    }
-    Catch {
-	    $ScriptSource = ''
-    }
+Function Show-ProgressStatus {
+    <#
+    .SYNOPSIS
+        Shows task sequence secondary progress of a specific step
     
+    .DESCRIPTION
+        Adds a second progress bar to the existing Task Sequence Progress UI.
+        This progress bar can be updated to allow for a real-time progress of
+        a specific task sequence sub-step.
+        The Step and Max Step parameters are calculated when passed. This allows
+        you to have a "max steps" of 400, and update the step parameter. 100%
+        would be achieved when step is 400 and max step is 400. The percentages
+        are calculated behind the scenes by the Com Object.
     
-    If(!$Severity){$Severity = 1}
-    $LogFormat = "<![LOG[$Message]LOG]!>" + "<time=`"$LogTimePlusBias`" " + "date=`"$LogDate`" " + "component=`"$ScriptSource`" " + "context=`"$([Security.Principal.WindowsIdentity]::GetCurrent().Name)`" " + "type=`"$Severity`" " + "thread=`"$PID`" " + "file=`"$ScriptSource`">"
+    .PARAMETER Message
+        The message to display the progress
+    .PARAMETER Step
+        Integer indicating current step
+    .PARAMETER MaxStep
+        Integer indicating 100%. A number other than 100 can be used.
+    .INPUTS
+         - Message: String
+         - Step: Long
+         - MaxStep: Long
+    .OUTPUTS
+        None
+    .EXAMPLE
+        Set's "Custom Step 1" at 30 percent complete
+        Show-ProgressStatus -Message "Running Custom Step 1" -Step 100 -MaxStep 300
     
-    # Add value to log file
-    try {
-        Out-File -InputObject $LogFormat -Append -NoClobber -Encoding Default -FilePath $OutputLogFile -ErrorAction Stop
-    }
-    catch {
-        Write-Host ("[{0}] [{1}] :: Unable to append log entry to [{1}], error: {2}" -f $LogTimePlusBias,$ScriptSource,$OutputLogFile,$_.Exception.ErrorMessage) -ForegroundColor Red
-    }
-    If($Outhost){
-        If($Source){
-            $OutputMsg = ("[{0}] [{1}] :: {2}" -f $LogTimePlusBias,$Source,$Message)
+    .EXAMPLE
+        Set's "Custom Step 1" at 50 percent complete
+        Show-ProgressStatus -Message "Running Custom Step 1" -Step 150 -MaxStep 300
+    .EXAMPLE
+        Set's "Custom Step 1" at 100 percent complete
+        Show-ProgressStatus -Message "Running Custom Step 1" -Step 300 -MaxStep 300
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string] $Message,
+        [Parameter(Mandatory=$true)]
+        [int]$Step,
+        [Parameter(Mandatory=$true)]
+        [int]$MaxStep,
+        [string]$SubMessage,
+        [int]$IncrementSteps,
+        [switch]$Outhost
+    )
+
+    Begin{
+
+        If($SubMessage){
+            $StatusMessage = ("{0} [{1}]" -f $Message,$SubMessage)
         }
         Else{
-            $OutputMsg = ("[{0}] [{1}] :: {2}" -f $LogTimePlusBias,$ScriptSource,$Message)
-        }
+            $StatusMessage = $Message
 
-        Switch($Severity){
-            0       {Write-Host $OutputMsg -ForegroundColor Green}
-            1       {Write-Host $OutputMsg -ForegroundColor Gray}
-            2       {Write-Warning $OutputMsg}
-            3       {Write-Host $OutputMsg -ForegroundColor Red}
-            4       {If($Global:Verbose){Write-Verbose $OutputMsg}}
-            default {Write-Host $OutputMsg}
         }
+    }
+    Process
+    {
+        If($Script:tsenv){
+            $Script:TSProgressUi.ShowActionProgress(`
+                $Script:tsenv.Value("_SMSTSOrgName"),`
+                $Script:tsenv.Value("_SMSTSPackageName"),`
+                $Script:tsenv.Value("_SMSTSCustomProgressDialogMessage"),`
+                $Script:tsenv.Value("_SMSTSCurrentActionName"),`
+                [Convert]::ToUInt32($Script:tsenv.Value("_SMSTSNextInstructionPointer")),`
+                [Convert]::ToUInt32($Script:tsenv.Value("_SMSTSInstructionTableSize")),`
+                $StatusMessage,`
+                $Step,`
+                $Maxstep)
+        }
+        Else{
+            Write-Progress -Activity "$Message ($Step of $Maxstep)" -Status $StatusMessage -PercentComplete (($Step / $Maxstep) * 100) -id 1
+        }
+    }
+    End{
+        Write-LogEntry $Message -Severity 1 -Outhost:$Outhost
     }
 }
 
@@ -155,10 +292,28 @@ $scriptPath = Get-ScriptPath
 
 #Get required folder and File paths
 [string]$ConfigPath = Join-Path -Path $scriptDirectory -ChildPath 'Configs'
+[string]$RelativeLogPath = Join-Path -Path $scriptDirectory -ChildPath 'Logs'
+#Search this path for local MDT installed
+[string]$LocalModulePath = "C:\Program Files\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"
 
-#check paths; if not found, unable to continue
-If(Test-Path "$ConfigPath\mdt_configs.xml"){
-    [string]$MDTXMLFile = (Get-Content "$ConfigPath\mdt_configs.xml" -ReadCount 0) -replace '&','&amp;'
+#Set this to somehting different for testing
+$ConfigFile = "mdt_configs.s3i.xml"
+
+#build log name
+[string]$FileName = $scriptBaseName +'.log'
+#build global log fullpath
+$Global:LogFilePath = Join-Path $RelativeLogPath -ChildPath $FileName
+#clean old log
+if(Test-Path $Global:LogFilePath){remove-item -Path $Global:LogFilePath -ErrorAction SilentlyContinue | Out-Null}
+
+Write-Host "Logging to file: $LogFilePath" -ForegroundColor Cyan
+
+
+
+# BUILD PATHS FROM XML
+#=======================================================
+If(Test-Path "$ConfigPath\$ConfigFile"){
+    [string]$MDTXMLFile = (Get-Content "$ConfigPath\$ConfigFile" -ReadCount 0) -replace '&','&amp;'
     [xml]$MDTConfigs = $MDTXMLFile
 
     #get the list of aoftware
@@ -166,12 +321,12 @@ If(Test-Path "$ConfigPath\mdt_configs.xml"){
     [string]$3rdSoftwareListPath = $MDTConfigs.mdtConfigs.softwareListCliXml.software.listPath
 
     If(-not(Test-Path $3rdSoftwareRootPath) -or -not(Test-Path $3rdSoftwareListPath)){
-        write-host ("Unable to find software repository path or xml file: {0}" -f $3rdSoftwareRootPath) -ForegroundColor Red
+        Write-LogEntry ("Unable to find software repository path or xml file: {0}" -f $3rdSoftwareRootPath) -Severity 3 -Outhost
         Exit
     }
 }
 Else{
-    write-host ("Unable to find configuration settings: {0}" -f "$ConfigPath\mdt_configs.xml") -ForegroundColor Red
+    Write-LogEntry ("Unable to find configuration settings: {0}" -f "$ConfigPath\$ConfigFile") -Severity 3 -Outhost
     Exit
 }
 
@@ -179,84 +334,74 @@ Else{
 ##* MAIN - DO ACTION
 ##* ==============================
 #get the list of MDT servers to update
-$MDTConfigs.mdtConfigs.server | Foreach {
-    
-    [string]$MDTHost = $_.Host
-    [string]$MDTShare = $_.share
-    [string]$MDTPhysicalPath = $_.PhysicalPath
+$MDTServers = $MDTConfigs.mdtConfigs.server
 
+
+#Loop through each server
+Foreach($Server in $MDTServers) {
+    
+    #Build Vairabls based on XML
+    [string]$MDTHost = $Server.Host
+    [string]$MDTShare = $Server.share
+    
+    
     #build mdt path to pull powershell
     $MDTSharePath = "\\" + $MDTHost + "\" + $MDTShare
 
-    [boolean]$UpdateApplications = [boolean]::Parse($_.updateApplications)
+    #check config if update application is set to true
+    [boolean]$UpdateApplications = [boolean]::Parse($Server.updateApplications)
+
     If(!$UpdateApplications){
-        write-host ("Configurations is configure NOT update Software on MDT Server: {0}" -f $MDTHost) -ForegroundColor Red
+        Write-LogEntry ("Configurations is configured NOT to update software on MDT Server: {0}" -f $MDTHost) -Severity 3 -Outhost
         Break
     }
 
-    If(-not(Test-Path $MDTSharePath) ){
-        write-host ("Unable to connect to MDT's DeploymentShare: {0}" -f $MDTSharePath) -ForegroundColor Red
-        Break
-    }
-    Else{
-        write-host ("Updating Software on MDT's DeploymentShare: {0}" -f $MDTSharePath)
-    }
 
-    
-    ##* ==============================
-    ##* IMPORT MODULE/EXTENSIONS
-    ##* ==============================
-    [boolean]$RemoteMDTProvider = [boolean]::Parse($_.remoteMDTProvider)
-
-    [string]$RemoteModulesPath = Join-Path -Path "$MDTSharePath\Tools" -ChildPath 'Modules'
-
-    #import TaskSequence Module
-    Import-Module $RemoteModulesPath\ZTIUtility -ErrorAction SilentlyContinue | OUt-null
-
-    #Try to use remote mdt provider is enabled
-    If($RemoteMDTProvider){
-        [System.Management.Automation.PSCredential]$MDTCreds = Import-Clixml ($scriptDirectory + "\" + $MDTConfigs.mdtConfigs.server.remoteAuthFile)
-
+    #check if path exists
+    If(Test-Path $MDTSharePath){
+        
         Try{
-            $Session = New-PSSession -ComputerName $MDTHost -Credential $MDTCreds
-            Invoke-Command -Session $Session -Script {
-                Import-Module "C:\Program Files\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"; 
-                $Drive = New-PSDrive -Name DS001 -PSProvider mdtprovider -Root $args[0]
-                cd $Drive.Root 
-            } -Args ($MDTConfigs.mdtConfigs.server.PhysicalPath)
-            #Enter-PSSession -Session $Session
-            $MDTModuleLoaded = $true 
+            #check permissions to share
+            (Get-Acl $MDTSharePath).Access | ?{$_.IdentityReference -match $User.SamAccountName} | Select IdentityReference,FileSystemRights | Out-Null
+            Write-LogEntry ("User has write permission to share, mapping drive: {0}..." -f $MDTSharePath) -Outhost
+
+            #disconnect drive if mapped
+            $MappedMDTDrive = Get-PSDrive | Where-Object{$_.Root -eq $MDTSharePath}
+            If($MappedMDTDrive){
+                Remove-PSDrive -Name $MappedMDTDrive.Name
+            }
+            #map MDT drive
+            New-PSDrive -Name $MapName -Root $MDTSharePath -PSProvider FileSystem | Out-Null
         }
         Catch{
-            Write-Host "Failed to remote into: $($_.Exception.Message)" -ForegroundColor Red
-            $MDTModuleLoaded = $false
-        }
-    }
-    Else{
-        $MDTModuleLoaded = $false
-    }
+            #if no write ermissions, try mapping drive using credentials
+            $MapName = "MDT_" + $MDTShare -replace "[\W]",""
+            #check if cred file exists, otherwise prompt for credentials
+            If(Test-path  $Server.remoteAuthFile){
+                [System.Management.Automation.PSCredential]$MDTCreds = Get-credential (Import-Clixml $Server.remoteAuthFile)
+            }
+            Else{
+                [System.Management.Automation.PSCredential]$MDTCreds = Get-credential
+            }
 
-    #load local mdt module if found and remote path did not work
-    $LocalModulePath = "C:\Program Files\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"
-    If(!$MDTModuleLoaded -and (Test-Path $LocalModulePath)){
-    
-        Import-Module $LocalModulePath
-        #map to mdt drive (must have MDT module loaded)
-        $MDTPSProvider = Get-PSProvider -PSProvider MDTProvider -ErrorAction SilentlyContinue
-        If(!$MDTPSProvider){
+            #map MDT drive using credentials
+            New-PSDrive -Name $MapName -Root $MDTSharePath -PSProvider FileSystem -Credential $MDTCreds | Out-Null
+            
+            #check permissions again
             Try{
-                $MDTDrive = New-PSDrive -Name DS001 -PSProvider mdtprovider -Root $MDTSharePath
+                (Get-Acl (Get-PSDrive -Name $MapName).Root).Access | ?{$_.IdentityReference -match $User.SamAccountName} | Select IdentityReference,FileSystemRights | Out-Null
+                Write-LogEntry ("User has write permission to share, mapping drive [{0}] using credentials [{1}]" -f $MDTSharePath,$MDTCreds.UserName) -Outhost
             }
             Catch{
-                Write-Host "Failed to load MDT module; Please try enabled remoteconfig" -ForegroundColor Red
+                Write-LogEntry ("Write permission to DeploymentShare [{0}] using credentials [{1}] are denied. Provide new mdt credentials to continue." -f $MDTSharePath,$MDTCreds.UserName) -Severity 3 -Outhost
+                Break
             }
         }
     }
     Else{
-        Write-Host "No MDT module were imported. Either try enabling remote import or go to [https://www.microsoft.com/en-us/download/details.aspx?id=54259]"
-        break
+        Write-LogEntry ("Unable to connect to MDT's DeploymentShare: {0}. Check config path." -f $MDTSharePath) -Severity 3 -Outhost
+        Break
     }
-
 
     ##* ==============================
     ##* MAIN
@@ -267,14 +412,15 @@ $MDTConfigs.mdtConfigs.server | Foreach {
         $MDTSettings = [Xml] (Get-Content "$MDTSharePath\Control\Settings.xml")
         [string]$MDT_Physical_Path = $MDTSettings.Settings.PhysicalPath
         [string]$MDT_UNC_Path = $MDTSettings.Settings.UNCPath
-
+        
 
         $MDTAppGroupsFile = [Xml] (Get-Content "$MDTSharePath\Control\ApplicationGroups.xml")
-        [xml]$MDTApps = Get-Content "$MDTSharePath\Control\Applications.xml" -Credential $MDTCreds
+        [xml]$MDTApps = Get-Content "$MDTSharePath\Control\Applications.xml"
 
         $NewSoftwareList = Import-Clixml $3rdSoftwareListPath
 
-        <#Test only
+        <#
+        Use for Test only
         $NewSoftware = ($NewSoftwareList | Where{($_.Product -match 'Chrome')} | Select -First 2)[1]
         $NewSoftware = $NewSoftwareList | Where{($_.Product -match 'Notepad\+\+')} | Select -First 1
         $NewSoftware = $NewSoftwareList | Where{($_.Product -match 'Reader DC')} | Select -first 1
@@ -284,7 +430,6 @@ $MDTConfigs.mdtConfigs.server | Foreach {
         $NewSoftware = $NewSoftwareList | Where{($_.Product -match 'Java')} | Select -last 1
         #>
 
-        $UpdateMDTAppXML = 0
         $UpdatedAppCount = 0
         $ExistingAppCount = 0
         $MissingAppCount = 0
@@ -293,44 +438,53 @@ $MDTConfigs.mdtConfigs.server | Foreach {
         {
 
             If($NewSoftware.Arch){
-                Write-Host ("Found [{0} {1} ({2}) - {3} bit] in software list" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Version,$NewSoftware.Arch) -ForegroundColor Cyan
+                Write-LogEntry ("Working with [{0} {1} ({2}) - {3} bit] in software list" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Version,$NewSoftware.Arch) -Outhost
             }
             Else{
-                Write-Host ("Found [{0} {1} ({2})] in software list" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Version) -ForegroundColor Cyan
+                Write-LogEntry ("Working with [{0} {1} ({2})] in software list" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Version) -Outhost
             }
             # clear the working app variable
             $MDTAppProducts = $null
             $MDTApp = $null
 
-            #remove parent path of where the software was downloaded to. Attach rootPath from config
-            $SplitSoftwarePath = $NewSoftware.FilePath -split "Software" 
-            $SourceUNCPath = $3rdSoftwareRootPath + '\Software' + $SplitSoftwarePath[-1]
+            #Search root path for file name
+            $SourceUNCPath = (Get-ChildItem -Path $3rdSoftwareRootPath -Filter $NewSoftware.File -Recurse).FullName
+            If($SourceUNCPath.Count -gt 1){
+                #Old school way, just in case file names are the same
+                #remove parent path of where the software was downloaded to. Attach rootPath from config
+                $SplitSoftwarePath = $NewSoftware.FilePath -split "Software" 
+                $SourceUNCPath = $3rdSoftwareRootPath + '\Software' + $SplitSoftwarePath[-1]
+            }
+            
+
             # find an MDT app that matches the software list base on Publisher, Product Name and Product Type (not always specified)
+            #If one is found count is null, but if 2 is found count is 2
             $MDTAppProducts = $MDTApps.applications.application | Where{($_.Publisher -eq $NewSoftware.Publisher) -and ($_.Name -match [regex]::Escape($NewSoftware.Product))}
-    
-            #if more than 1 are found, filter on product type to reduce it
+            
+            #if products found equal to 2 or more, filter on product type to reduce it even further
             If($MDTAppProducts.Count -ge 2){
                 $MDTAppFilter1 = $MDTAppProducts | Where {($_.Name -match [regex]::Escape($NewSoftware.ProductType))}
                 If($MDTAppFilter1){$MDTAppProducts = $MDTAppFilter1}
             }
     
-            #if more than 1 are found, filter on arch match, if specified (names labeled with x64 or x86) to reduce it. 
+            #if products found equal to 2 or more, filter on arch match, if specified (names labeled with x64 or x86) to reduce it. 
             If($MDTAppProducts.Count -ge 2){
                 $MDTAppFilter2 = $MDTAppProducts | Where {($_.Name -match $NewSoftware.Arch) -or ($_.ShortName -match $NewSoftware.Arch)}
                 If($MDTAppFilter2){$MDTAppProducts = $MDTAppFilter2}
             }
 
-            #if more than 1 are found, filter on arch no match, if NOT specified (usually labeled with x86) to reduce it.
+            #if products found equal to 2 or more, filter on arch no match, if NOT specified (usually labeled with x86) to reduce it.
             If($MDTAppProducts.Count -ge 2){
                 $MDTAppFilter3 = $MDTAppProducts | Where {($_.Name -notmatch 'x64') -and ($_.ShortName -notmatch 'x64')}
                 If($MDTAppFilter3){$MDTAppProducts = $MDTAppFilter3}
             }    
 
+            #lastly just select the first one (hopefully its the correct one)
             $MDTApp = $MDTAppProducts | Select -First 1
 
             #If and app is found
             If($MDTApp){
-                Write-Host ("Filtered Application in MDT to [{0}]" -f $MDTApp.Name) -ForegroundColor DarkYellow
+                Write-LogEntry ("Filtered Application in MDT to [{0}]" -f $MDTApp.Name) -Outhost
 
                 #remove share from path to get relative path
                 $mappedPath = ($MDTApp.WorkingDirectory).Replace('.',$MDTSharePath)
@@ -387,7 +541,7 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                                             }
                     }
                     write-host ("Categorizing folder [" + $_.Name + "]")
-                }
+                } #end folder check loop
 
 
                 #ensure folders are different and deliminated for matching
@@ -415,23 +569,23 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                 # assume if version match that previous similiar software updated the application. 
                 # This issue exists when multiple architecture version exists
                 If($MDTApp.Version -eq $NewSoftware.Version){
-                    Write-Host ("Application [{0}] version [{1}] was already found in MDT, checking if file exists..." -f $MDTApp.Name,$MDTApp.Version) -ForegroundColor Gray
+                    Write-LogEntry ("Application [{0}] version [{1}] was already found in MDT, checking if file exists..." -f $MDTApp.Name,$MDTApp.Version) -Outhost
                     If(-not(Test-Path "$DestinationPath\$($NewSoftware.File)")){
 
                         ##' If the copy fails return to the stop processing the new software
                         Try{
                             If(Test-Path $SourceUNCPath){
                                 Copy-Item $SourceUNCPath -Destination $DestinationPath -Force -PassThru | Out-null
-                                Write-Host ("Copied File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -ForegroundColor Green
+                                Write-LogEntry ("Copied File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -Outhost
                             }
                         }
                         Catch{
-                            Write-Host ("Failed to copy File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -ForegroundColor Red
+                            Write-LogEntry ("Failed to copy File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -Severity 3 -Outhost
                             Return
                         }
                     }
                     Else{
-                        Write-Host ("Application [{0}] version [{1}] was already found in MDT" -f $MDTApp.Name,$MDTApp.Version) -ForegroundColor Green
+                        Write-LogEntry ("Application [{0}] version [{1}] was already found in MDT" -f $MDTApp.Name,$MDTApp.Version) -Severity 0 -Outhost
                         $ExistingAppCount ++
                     }
                 }
@@ -447,11 +601,11 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                     Try{
                         If(Test-Path $SourceUNCPath){
                             Copy-Item $SourceUNCPath -Destination $DestinationPath -Force -PassThru | Out-null
-                            Write-Host ("Copied File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -ForegroundColor Green
+                            Write-LogEntry ("Copied File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -Severity 0 -Outhost
                         }
                     }
                     Catch{
-                        Write-Host ("Failed to copy File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -ForegroundColor Red
+                        Write-LogEntry ("Failed to copy File [{0}] to [{1}]" -f $NewSoftware.File,$DestinationPath) -Severity 3 -Outhost
                         Return
                     }
             
@@ -464,7 +618,7 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                     switch($Command[0]){
                     #second update the installer scripts
                         'cscript' { 
-                                    Write-Host ("Found a cscript [{0}] for the installer" -f $Command[1]) -ForegroundColor Gray
+                                    Write-LogEntry ("Found a cscript [{0}] for the installer" -f $Command[1]) -Outhost
                                     #grab content from script that installs application
                                     $content = Get-Content "$($mappedPath + '\' + $Command[1])" | Out-String
                                     #find text line that has sVersion
@@ -476,11 +630,11 @@ $MDTConfigs.mdtConfigs.server | Foreach {
         
                                         #add updated version to vbscript
                                         $NewContentVer | Set-Content -Path "$($mappedPath + '\' + $Command[1])" 
-                                        Write-Host ("Updated [{0}] variable [sVersion] from [{1}] to [{2}]" -f $Command[1],$matches[1].replace('"',''),$NewSoftware.Version) -ForegroundColor DarkYellow
+                                        Write-LogEntry ("Updated [{0}] variable [sVersion] from [{1}] to [{2}]" -f $Command[1],$matches[1].replace('"',''),$NewSoftware.Version) -Outhost
                                         $CommandUpdated = $true
                                     }
                                     Else{
-                                        Write-Host ("Unable to find [sVersion] variable in [{0}], there may be an issue during deployment" -f $Command[1]) -ForegroundColor Red
+                                        Write-LogEntry ("Unable to find [sVersion] variable in [{0}], there may be an issue during deployment" -f $Command[1]) -Severity 3 -Outhost
                                     }
 
                                     #Clear matches
@@ -489,15 +643,15 @@ $MDTConfigs.mdtConfigs.server | Foreach {
 
 
                         '*.exe' {
-                                    Write-Host ("Found a executable [{0}] for the installer" -f $Command[1]) -ForegroundColor Gray
+                                    Write-LogEntry ("Found a executable [{0}] for the installer" -f $Command[1]) -Outhost
                                 }
 
                         'Powershell*' {
-                                    Write-Host ("Found a powershell script [{0}] for the installer" -f $Command[1]) -ForegroundColor Gray
+                                    Write-LogEntry ("Found a powershell script [{0}] for the installer" -f $Command[1]) -Outhost
                                 }
 
                         'msiexec*' {
-                                    Write-Host ("Found a msi file [{0}] for the installer" -f $Command[1]) -ForegroundColor Gray
+                                    Write-LogEntry ("Found a msi file [{0}] for the installer" -f $Command[1]) -Outhost
                                 }
                     }
 
@@ -511,14 +665,14 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                         Get-ChildItem -Path $mappedPath -Recurse -Depth 1 -Force -Directory | ?{ $_.Name -match $ExtraFolders -and $_.name -notmatch $KeepFolders -and $_.Fullname -notmatch $IgnoreFolders} | ForEach-Object{
                             #if mutiple files exist, loop through them to see if its a version name.
                             Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
-                            Write-Host ("Deleted Folder: {0}" -f $_.FullName) -ForegroundColor Red
+                            Write-LogEntry ("Deleted Folder: {0}" -f $_.FullName) -Severity 3 -Outhost
                         }
 
                         #' Update MDT Listing
                         #' =========================
                         $MDTApp.Version = $NewSoftware.Version
-                        Write-Host ("Configured to change MDT's Application [{0}] version property to [{1}]" -f $MDTApp.Name,$NewSoftware.Version) -ForegroundColor DarkGreen
-                        $UpdateMDTAppXML ++
+                        Write-LogEntry ("Configured to change MDT's Application [{0}] version property to [{1}]" -f $MDTApp.Name,$NewSoftware.Version) -Severity 0 -Outhost
+                        $UpdatedAppCount ++
 
                     }
                 }
@@ -526,29 +680,35 @@ $MDTConfigs.mdtConfigs.server | Foreach {
                 #' Save MDT Listing
                 #' =========================
                 Try{
-                    If($UpdateMDTAppXML -gt 0){$mdtapps.save("$MDTSharePath\Control\Applications.xml")}
-                    Write-Host ("Saved changes to MDT's Application configuration file [{0}] for [{1}]" -f "$MDTSharePath\Control\Applications.xml",$MDTApp.Name) -ForegroundColor Green
+                    If($UpdatedAppCount -gt 0){$mdtapps.save("$MDTSharePath\Control\Applications.xml")}
+                    Write-LogEntry ("Saved changes to MDT's Application configuration file [{0}] for [{1}]" -f "$MDTSharePath\Control\Applications.xml",$MDTApp.Name) -Severity 0 -Outhost
                     #reset back to 0
-                    $UpdateMDTAppXML = 0
+                    $UpdatedAppCount = 0
                 }
                 Catch{
-                    Write-Host ("Failed write changes to MDT's Application configuration file [{0}] for [{1}]" -f "$MDTSharePath\Control\Applications.xml",$MDTApp.Name) -ForegroundColor Red
+                    Write-LogEntry ("Failed write changes to MDT's Application configuration file [{0}] for [{1}]" -f "$MDTSharePath\Control\Applications.xml",$MDTApp.Name) -Severity 3 -Outhost
                     Return
                 }
             }
             Else{
-                Write-Host ("Application [{0} {1} ({2})] was not found in MDT" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Arch) -ForegroundColor Yellow
+                Write-LogEntry ("Application [{0} {1} ({2})] was not found in MDT" -f $NewSoftware.Publisher,$NewSoftware.Product,$NewSoftware.Arch) -Severity 2 -Outhost
                 $MissingAppCount ++
             }
 
     
-        } 
+        } #end software loop 
 
-        Write-host ("Updated " + $UpdatedAppCount + " Applications in MDT")
-        Write-host ("Found " + $MissingAppCount + " missing Applications in MDT")
-        Write-host ("Existing " + $ExistingAppCount + " Applications already up-to-date")
+        #write out results
+        Write-LogEntry ("Updated " + $UpdatedAppCount + " Applications in MDT") -Outhost
+        Write-LogEntry ("Found " + $MissingAppCount + " missing Applications in MDT") -Outhost
+        Write-LogEntry ("Existing " + $ExistingAppCount + " Applications already up-to-date") -Outhost
+        
+        #disconnect drive if mapped
+        If(Get-PSDrive -Name $MapName -ErrorAction SilentlyContinue){
+            Remove-PSDrive -Name $MapName
+        }
     }
     Else{
-        Write-Host ("Failed write get to MDT's Settings from [{0}]" -f "$MDTSharePath\Control\Settings.xml") -ForegroundColor Red
+        Write-LogEntry ("Failed write get to MDT's Settings from [{0}]" -f "$MDTSharePath\Control\Settings.xml") -Severity 3 -Outhost
     }
 }
